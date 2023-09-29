@@ -17,14 +17,13 @@ COPY --from=base /etc/yum.repos.d/ubi.repo /etc/yum.repos.d/ubi.repo
 RUN chmod +t /tmp /var/tmp
 CMD ["/bin/bash"]
 FROM registry1.dso.mil/ironbank/opensource/python:v3.11 as build
-ARG VERSION=v18.18.0
-ARG DISTRO=linux-x64
 USER root
+WORKDIR /tmp
 RUN dnf -y install wget && \
     wget https://nodejs.org/dist/v18.18.0/node-v18.18.0-linux-x64.tar.xz && \
 	mkdir -p /usr/local/lib/nodejs && \
-	tar -xJvf node-$VERSION-$DISTRO.tar.xz -C /usr/local/lib/nodejs && \
-    rm -rf node-$VERSION-$DISTRO.tar.xz
+	tar -xJvf node-v18.18.0-linux-x64.tar.xz -C /usr/local/lib/nodejs && \
+    rm -rf node-v18.18.0-linux-x64.tar.xz
 USER 1001
 # Copy and install middleware dependencies
 COPY --chown=1001:0 deploy/requirements-mw.txt .
@@ -37,7 +36,7 @@ RUN pip install --no-cach-dir -r requirements.txt
 FROM micro as python
 ARG VERSION=v18.18.0
 ARG DISTRO=linux-x64
-ENV PATH="/usr/local/bin:/home/python/.local/bin:/usr/local/lib/nodejs/node-$VERSION-$DISTRO/bin:$PATH"
+ENV PATH="/usr/local/bin:/home/python/.local/bin:/usr/local/lib/nodejs/node-v18.18.0-linux-x64/bin:$PATH"
 ENV REQUESTS_CA_BUNDLE /etc/pki/tls/certs/ca-bundle.crt
 ENV SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.trust.crt
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
