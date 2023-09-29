@@ -6,7 +6,7 @@ RUN mkdir -p /mnt/rootfs && \
        glibc-langpack-en \
        zlib findutils expat libstdc++ \
        bzip2-libs xz-libs libzip \
-       openssl-libs tar gzip wget nginx && \
+       openssl-libs tar gzip nginx && \
     dnf clean all && \
     rm -rf /mnt/rootfs/var/cache/* /mnt/rootfs/var/log/dnf* && \
     cp /root/{.bashrc,.cshrc} /mnt/rootfs/root/ && \
@@ -19,11 +19,21 @@ CMD ["/bin/bash"]
 FROM registry1.dso.mil/ironbank/opensource/python:v3.11 as build
 ARG VERSION=v18.18.0
 ARG DISTRO=linux-x64
+USER root
 RUN dnf -y install wget && \
     wget https://nodejs.org/dist/v18.18.0/node-v18.18.0-linux-x64.tar.xz && \
 	mkdir -p /usr/local/lib/nodejs && \
 	tar -xJvf node-$VERSION-$DISTRO.tar.xz -C /usr/local/lib/nodejs && \
     rm -rf node-$VERSION-$DISTRO.tar.xz
+USER 1001
+# Copy and install middleware dependencies
+COPY --chown=1001:0 deploy/requirements-mw.txt .
+RUN pip install --no-cache-dir uwsgi uwsgitop && \
+    pip install --no-cache-dir -r requirements-mw.txt
+# Copy and install requirements.txt first for caching
+COPY --chown=1001:0 deploy/requirements.txt .
+RUN pip install --no-cach-dir -r requirements.txt
+
 FROM micro as python
 ARG VERSION=v18.18.0
 ARG DISTRO=linux-x64
@@ -35,6 +45,7 @@ COPY --from=build /usr/local/include/python3.11 /usr/local/include/python3.11
 COPY --from=build /usr/local/lib /usr/local/lib
 COPY --from=build /usr/local/bin /usr/local/bin
 COPY --from=build /usr/local/lib/nodejs /usr/local/lib/nodejs
+USER root
 RUN echo '/usr/local/lib' > /etc/ld.so.conf && \
         ldconfig && \
         mkdir -p /app && \
@@ -51,11 +62,10 @@ WORKDIR /label-studio/label_studio/frontend
 
 COPY --chown=1001:0 label_studio/frontend .
 COPY --chown=1001:0 label_studio/__init__.py /label-studio/label_studio/__init__.py
-
+USER root
 RUN npm install -g yarn npm && \
-    --mount=type=cache,target=$NPM_CACHE_LOCATION,uid=1001,gid=0 \
-    yarn install --frozen-lockfile\
- && yarn run build:production
+    yarn install --frozen-lockfile && \
+    yarn run build:production
 
 FROM python
 
@@ -74,25 +84,12 @@ USER 1001
 
 WORKDIR $LS_DIR
 
-# Copy and install middleware dependencies
-COPY --chown=1001:0 deploy/requirements-mw.txt .
-RUN --mount=type=cache,target=$PIP_CACHE_DIR,uid=1001,gid=0 \
-    pip3 install uwsgi uwsgitop && \
-    pip3 install -r requirements-mw.txt
-
-# Copy and install requirements.txt first for caching
-COPY --chown=1001:0 deploy/requirements.txt .
-RUN --mount=type=cache,target=$PIP_CACHE_DIR,uid=1001,gid=0 \
-    pip3 install -r requirements.txt
-
 COPY --chown=1001:0 . .
-RUN --mount=type=cache,target=$PIP_CACHE_DIR,uid=1001,gid=0 \
-    pip3 install -e .
+RUN pip install --no-cache-dir -e . && \
+    rm -rf ./label_studio/frontend && \
+    python3 label_studio/manage.py collectstatic --no-input
 
-RUN rm -rf ./label_studio/frontend
 COPY --chown=1001:0 --from=frontend-builder /label-studio/label_studio/frontend/dist ./label_studio/frontend/dist
-
-RUN python3 label_studio/manage.py collectstatic --no-input
 
 EXPOSE 8080
 
