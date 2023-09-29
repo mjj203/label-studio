@@ -1,0 +1,104 @@
+FROM registry.access.redhat.com/ubi9:latest as base
+RUN mkdir -p /mnt/rootfs && \
+    dnf install --installroot /mnt/rootfs --releasever 9 \
+       --setopt install_weak_deps=false --nodocs -y \
+       coreutils-single ca-certificates \
+       glibc-langpack-en \
+       zlib findutils expat libstdc++ \
+       bzip2-libs xz-libs libzip \
+       openssl-libs tar gzip wget nginx && \
+    dnf clean all && \
+    rm -rf /mnt/rootfs/var/cache/* /mnt/rootfs/var/log/dnf* && \
+    cp /root/{.bashrc,.cshrc} /mnt/rootfs/root/ && \
+    rm -f /mnt/rootfs/etc/{bashrc,csh.cshrc,issue,profile}
+FROM registry1.dso.mil/ironbank/redhat/ubi/ubi9-micro:latest as micro
+COPY --from=base /mnt/rootfs/ /
+COPY --from=base /etc/yum.repos.d/ubi.repo /etc/yum.repos.d/ubi.repo
+RUN chmod +t /tmp /var/tmp
+CMD ["/bin/bash"]
+FROM registry1.dso.mil/ironbank/opensource/python:v3.11 as build
+ARG VERSION=v18.18.0
+ARG DISTRO=linux-x64
+RUN dnf -y install wget && \
+    wget https://nodejs.org/dist/v18.18.0/node-v18.18.0-linux-x64.tar.xz && \
+	mkdir -p /usr/local/lib/nodejs && \
+	tar -xJvf node-$VERSION-$DISTRO.tar.xz -C /usr/local/lib/nodejs && \
+    rm -rf node-$VERSION-$DISTRO.tar.xz
+FROM micro as python
+ARG VERSION=v18.18.0
+ARG DISTRO=linux-x64
+ENV PATH="/usr/local/bin:/home/python/.local/bin:/usr/local/lib/nodejs/node-$VERSION-$DISTRO/bin:$PATH"
+ENV REQUESTS_CA_BUNDLE /etc/pki/tls/certs/ca-bundle.crt
+ENV SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.trust.crt
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+COPY --from=build /usr/local/include/python3.11 /usr/local/include/python3.11
+COPY --from=build /usr/local/lib /usr/local/lib
+COPY --from=build /usr/local/bin /usr/local/bin
+COPY --from=build /usr/local/lib/nodejs /usr/local/lib/nodejs
+RUN echo '/usr/local/lib' > /etc/ld.so.conf && \
+        ldconfig && \
+        mkdir -p /app && \
+        echo "python:x:1001:0" >> /etc/group && \
+        echo "python:x:1001:0::/app:/sbin/nologin" >> /etc/passwd && \
+        chown -R python:python /app && \
+        chmod -R 0777 /app
+FROM registry.access.redhat.com/ubi9/nodejs-18-minimal:latest AS frontend-builder
+
+ENV NPM_CACHE_LOCATION=$HOME/.cache/yarn/v6 \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
+WORKDIR /label-studio/label_studio/frontend
+
+COPY --chown=1001:0 label_studio/frontend .
+COPY --chown=1001:0 label_studio/__init__.py /label-studio/label_studio/__init__.py
+
+RUN --mount=type=cache,target=$NPM_CACHE_LOCATION,uid=1001,gid=0 \
+    yarn install --frozen-lockfile\
+ && yarn run build:production
+
+FROM python
+
+ENV LS_DIR=/label-studio \
+    PIP_CACHE_DIR=$HOME/.cache \
+    DJANGO_SETTINGS_MODULE=core.settings.label_studio \
+    LABEL_STUDIO_BASE_DATA_DIR=/label-studio/data \
+    OPT_DIR=/opt/heartex/instance-data/etc \
+    SETUPTOOLS_USE_DISTUTILS=stdlib
+
+USER 0
+RUN mkdir -p $OPT_DIR && \
+    chown -R 1001:0 $OPT_DIR /etc/nginx/nginx.conf && \
+    chmod -R g=u $OPT_DIR /etc/nginx/nginx.conf
+USER 1001
+
+WORKDIR $LS_DIR
+
+# Copy and install middleware dependencies
+COPY --chown=1001:0 deploy/requirements-mw.txt .
+RUN --mount=type=cache,target=$PIP_CACHE_DIR,uid=1001,gid=0 \
+    pip3 install uwsgi uwsgitop && \
+    pip3 install -r requirements-mw.txt
+
+# Copy and install requirements.txt first for caching
+COPY --chown=1001:0 deploy/requirements.txt .
+RUN --mount=type=cache,target=$PIP_CACHE_DIR,uid=1001,gid=0 \
+    pip3 install -r requirements.txt
+
+COPY --chown=1001:0 . .
+RUN --mount=type=cache,target=$PIP_CACHE_DIR,uid=1001,gid=0 \
+    pip3 install -e .
+
+RUN rm -rf ./label_studio/frontend
+COPY --chown=1001:0 --from=frontend-builder /label-studio/label_studio/frontend/dist ./label_studio/frontend/dist
+
+RUN python3 label_studio/manage.py collectstatic --no-input
+
+EXPOSE 8080
+
+COPY --chown=1001:0 licenses/ /licenses
+RUN cp $LS_DIR/LICENSE /licenses
+ENV HOME=/label-studio
+
+ENTRYPOINT ["./deploy/docker-entrypoint.sh"]
+CMD ["label-studio"]
+
