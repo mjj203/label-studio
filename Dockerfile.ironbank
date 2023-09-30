@@ -19,12 +19,14 @@ CMD ["/bin/bash"]
 FROM registry1.dso.mil/ironbank/opensource/python:v3.11 as build
 USER root
 WORKDIR /tmp
-RUN dnf install gcc gcc-c++ make cmake && \
-    pip install -U --no-cache-dir pip setuptools wheel cython
+RUN dnf install -y gcc gcc-c++ make cmake && \
+    pip install -U --no-cache-dir pip && \
+    pip install -U --no-cache-dir setuptools wheel cython
+RUN RUN pip install --no-cache-dir uwsgi
+RUN RUN pip install --no-cache-dir uwsgitop
 # Copy and install middleware dependencies
 COPY --chown=1001:0 deploy/requirements-mw.txt .
-RUN pip install --no-cache-dir uwsgi uwsgitop && \
-    pip install --no-cache-dir -r requirements-mw.txt
+RUN pip install --no-cache-dir -r requirements-mw.txt
 # Copy and install requirements.txt first for caching
 COPY --chown=1001:0 deploy/requirements.txt .
 RUN pip install --no-cach-dir -r requirements.txt
